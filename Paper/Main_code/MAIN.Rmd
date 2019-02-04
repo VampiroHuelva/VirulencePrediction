@@ -1,0 +1,573 @@
+---
+title: "Finding best accuaracy in classifiers for A.baumanii tissue isolation source and the genes involved "
+author: "Alberto Gil Pichardo"
+date: "15 de octubre de 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r library,include=FALSE}
+#library(HEMDAG)
+library(ggvis)
+library(e1071)
+library(class)
+library(xlsx)
+library(tidyr)
+library(dplyr)
+library(tibble)
+library(knitr)
+library(rJava)
+library(rpart)
+library(party)
+library(partykit)
+library(ggplot2)
+library(randomForest)
+library(iRF)
+library(AUC)
+library(caret)
+library(knitr)
+library(kableExtra)
+library(caret)
+library(plyr)
+library(data.table)
+library(RWeka)
+```
+
+
+
+
+
+# Content
+- Data Adquisition & Pre-procesing
+- Feature selection/ Dimension reduction
+- Models Development
+- Models Comparison
+- Features Itereation; Looking for target genes iteration
+
+## Data Adquisition
+!!!!Change it with the final presence/absence data. The data loaded must be already labeled.!!!!!
+```{r Data_Adquisition}
+setwd("~/Documentos/TFM.LoadingData/FinalInput")
+binary_BC <- read.delim("GOLD_Presence_Ausence.txt",header = FALSE, sep = "\t", dec = ".")
+```
+
+
+Eliminate the genes that do not give any valuable information. The variables that are allways present or absente in all the strains. Eliminate the genes that are not present in at least 5% of the strains(lower bound), and keep only the strains with more than a 85% of the core genome. *Not necessary to do with the new data*
+```{r Wrangling}
+strains <-binary_BC[1,-c(1,2446)]
+genes <- binary_BC[-c(1),1]
+
+binary_BC_t <- as.data.frame(t(binary_BC))
+binary_BC_t <- binary_BC_t[-c(2446),]
+rownames(binary_BC_t) <- binary_BC_t$V1
+binary_BC_t <- binary_BC_t[-c(1),]
+binary_BC_t <- binary_BC_t[,-c(1)]
+
+
+colnames(binary_BC_t) <- genes 
+
+
+bad_genes <- c()
+for (n in 1:length(binary_BC_t[1,])) {
+  if(length(unique(binary_BC_t[,n]))==1){
+    bad_genes <- append(bad_genes,n)
+  }
+}
+binary_BC_t <- binary_BC_t[,-bad_genes]
+```
+
+
+Add the class column. The easy way consist in using the class column from the data created in other script called BC_balanced. **** Found the coude to create it for a future script. 
+
+```{r Labeling}
+setwd("~/Documentos/TFM.LoadingData/Other_Input/")
+BC_full <- read.csv("Bac_Col_Full.csv",header = TRUE)
+colnames(BC_full)[1] <- "Strains_Name"
+rownames(BC_full)<- BC_full$Strains_Name
+BC_full <- BC_full[,-1]
+#Order the strains as in BC_full so the class labels can be imported
+binary_BC_t <- binary_BC_t[rownames(BC_full),]
+# insert the class column
+binary_BC_DEF <- cbind(BC_full[,1],binary_BC_t)
+colnames(binary_BC_DEF)[1] <- "Class"
+```
+
+
+
+Labels Colonization and Bacteremia comes from a deep analysis of the 'metadata'file. 
+
+```{r Balancing}
+col_full <- binary_BC_DEF[which(binary_BC_DEF$Class == "Colonization"),]
+bac_full <- binary_BC_DEF[which(binary_BC_DEF$Class == "Bacteremia"),]
+bac_red <- bac_full[1:143,]
+
+BC_Balanced <- as.data.frame(rbind(col_full,bac_red))
+```
+
+
+## Feature Selection/Dimension Reduction
+
+
+
+### Using RF scoring on the importence of the features to the classification
+
+Import data dimension reduction function from "RF_functions.R" script. I made this function; *Description*
+Use random forest importance function to find the optimun number of variables and plot the results
+
+
+```{r criva}
+Gene_npresen <- vector(mode="integer", length=0)
+for (i in 2:19494){
+  x <- as.numeric(as.character(BC_Balanced[,i]))
+  y <- sum(x)
+  Gene_npresen <- c(Gene_npresen,y)
+}
+pa_genes <- which(Gene_npresen<5 | Gene_npresen>281)
+pa_genes_add <- pa_genes +1
+BC_Balanced <- BC_Balanced[,-pa_genes_add]
+
+```
+
+
+
+*Only execute this step when in supercomputation cluster*
+```{r RF_DR_1}
+setwd("~/Documentos/TFM.LoadingData/")
+source("RF_functions.R")
+error_rate <- var_selection(min_var = 2, reps = 10,data = BC_Balanced)
+
+
+```
+
+```{r plot_var_1}
+var_plot_1 <- ggplot(error_rate, aes(x=Number_Variables, y=OOB_error)) + geom_point() +stat_summary(aes(y = OOB_error), fun.y=mean, colour="red", geom="line")
+var_plot_super_reduced <- ggplot(error_rate, aes(x=Number_Variables, y=OOB_error)) + geom_point() +stat_summary(aes(y = OOB_error), fun.y=mean, colour="red", geom="line")+coord_cartesian(xlim = c(0, 500))
+
+```
+
+
+*Only execute this step when in supercomputation cluster*
+```{r cont}
+setwd("~/Documentos/TFM.LoadingData/")
+source("RF_functions.R")
+error_rate_2 <- var_selection(n_var = 200,min_var = 2, reps = 10,data = BC_Balanced, rest_var = -1)
+List_50 <- error_rate[[2]]
+save(List_50, file = "Genes_Optimun.RData")
+```
+
+```{r plot_var_2}
+var_plot_2 <- ggplot(error_rate_2, aes(x=Number_Variables, y=OOB_error)) + geom_point() +stat_summary(aes(y = OOB_error), fun.y=mean, colour="red", geom="line")
+var_plot_super_reduced_2 <- ggplot(error_rate_2, aes(x=Number_Variables, y=OOB_error)) + geom_point() +stat_summary(aes(y = OOB_error), fun.y=mean, colour="red", geom="line")+coord_cartesian(xlim = c(25,75))
+
+```
+
+Build a random forest object with the 50 variables previusly found to check the importance table for that genes
+```{r RF_50}
+setwd("~/Documentos/TFM.LoadingData/FinalInput/")
+load(file = "Genes_Optimun.RData")
+genes <- genes[[1]]
+RF_50 <- randomForest(Class~., data = BC_Balanced[,c("Class",genes)],importance=TRUE, proximity=TRUE)
+
+imp_50 <- as.data.frame(RF_50$importance)
+```
+
+Here a dataframe with var importance output of our 50 variables random Forest is output.
+```{r table_50}
+Top_Genes_dataframe <- as.data.frame(importance(RF_50))
+count_top_genes <-  data.frame(Counts_Colonization= numeric(0), Counts_Bactermia= numeric(0), Fisher_test= numeric(0))
+for (gene in rownames(Top_Genes_dataframe)){
+  n_bac <- sum(as.numeric(as.character(BC_Balanced[which(BC_Balanced$Class == "Bacteremia"),gene])))
+  n_col <- sum(as.numeric(as.character(BC_Balanced[which(BC_Balanced$Class == "Colonization"),gene])))
+  contingen <- matrix(c(n_bac,143 - n_bac ,n_col, 143 - n_col),ncol = 2,nrow = 2)
+  Fisher <- fisher.test (contingen)
+  
+  
+  count_top_genes <- rbind(count_top_genes,c(n_bac,n_col,Fisher$p.value))
+  
+}
+
+Top_Genes_dataframe <- as.data.frame(cbind(Top_Genes_dataframe, count_top_genes))
+colnames(Top_Genes_dataframe)[c(5,6,7)] <- c("Count_BAC", "Count_COL","p-value Fisher")
+Top_Genes_dataframe <- Top_Genes_dataframe[,c(1,5,2,6,3,4,7)]
+write.xlsx(Top_Genes_dataframe, "Top_Genes_Fisher_dataframe.xlsx")
+```
+
+
+## Models development
+### Cross-Val Function
+
+Making a partition function to divide the data in the cross val sets, where p is the number of partitions and f is the data to divide. This is mainly use for comparing diferent algortihms so they can be trained and tested in the same set. 
+```{r cross1}
+partition <- function(p, f) {
+  if (is.atomic(f)) {
+    lenf <- length(f)
+  } else {
+    lenf < length(f[[1]])
+  }
+  part <- vector(mode="integer", length=lenf)
+  tapply(X=1:length(part), INDEX=f, FUN=function(i) {
+       part[i] <<- as.integer((sample(1:length(i)) + sample(1:p,1))%%p + 1)
+    }
+  )
+  return(part)
+}
+
+```
+
+
+
+
+## Models Comparison
+
+1. Comparing different schenarios of RF:
+  -Standar RF
+    Standar algortihm with out applying any Parameter tuning
+  -RF with parameter tuning
+    mtry,ntree and nº variables(Random_roary_286.R, RAMDOM.R)
+  -Iterative weigthed RF
+
+2. Comparing different algortihms:
+  - Naibe Bayes
+  - Knn
+  - Decision tree and J48
+  - SVM
+  -¿¿¿ NNet ???
+
+### 1. RF schenarios
+Althought it is proben(paper) that randomForest() package use an implementation of the RF algortihm that is very strong to parameters changes,  optimization of number of trees, number of variables split at each leaf and number of variables given as input is analized. 
+
+
+```{r asnumeric}
+BC_Balanced_num <- as.data.frame(apply(BC_Balanced[,-1] , 2, function(x) as.numeric(as.character(x))))
+rownames(BC_Balanced_num) <- rownames(BC_Balanced)
+``` 
+
+
+Dividing the data for further analysis. p = 8, f = BC_Balanced
+```{r RF_comp}
+
+cross_RF <- partition(p=8,f=BC_Balanced$Class)
+accu_RF_models <-  data.frame(Partition =integer(0), Standar= numeric(0),Features_Selected = numeric(0),Iterative = numeric(0))
+names(BC_Balanced) <- make.names(names(BC_Balanced))
+for (p in 1:8) {
+  training_set <-  BC_Balanced[cross_RF!=1,]
+  training_set_num <-  BC_Balanced_num[cross_RF!=1,]
+  test_set <-  BC_Balanced[cross_RF==1,]
+  test_set_num <-  BC_Balanced_num[cross_RF==1,]
+  
+  #Standar_RF
+  RF_st <- randomForest(Class~.,data= training_set,importance=TRUE)
+  st_predict <- predict(RF_st, newdata= test_set[,-1])
+  st_conf <- confusionMatrix(st_predict, test_set[,1])
+  
+  #Var_selection RF
+  RF_50 <- randomForest(Class~.,data= training_set[,c("Class",genes)]  ,importance=TRUE)
+  N50_predict <- predict(RF_50, newdata= test_set[,-1])
+  N50_conf <- confusionMatrix(N50_predict, test_set[,1])
+  
+  #Iterative RF
+  iRF_iter <- iRF(x=as.matrix(training_set_num), y=training_set[,1], 
+            xtest=NULL, ytest=NULL, 
+            n.iter=5, 
+            n.bootstrap=10
+            
+  )
+  iRF_5 <- iRF_iter$rf.list[[5]]
+  iRF_predict <- predict(iRF_5, newdata= test_set_num)
+  iRF_conf <- confusionMatrix(iRF_predict, test_set[,1])
+  
+  accu_RF_models  <- rbind(accu_RF_models ,c(p,st_conf$overall[1],N50_conf$overall[1],iRF_conf$overall[1]))
+}
+colnames(accu_RF_models ) <- c("Partition", "Standar RF","Reduced RF","Iterative RF")
+
+accu_RF_models
+```
+
+
+```{r save_RF_comp}
+
+
+
+```
+
+## Weighted RF
+```{r tr, eval=FALSE}
+print("do not run")
+```
+
+
+```{r Weighted_RF,eval=FALSE}
+ ## Check if it is printed when Knit
+print("It should not be printed")
+names(BC_Balanced) <- make.names(names(BC_Balanced))
+p <- 5053
+#Initializing equal variable weitgh for the loop
+sel.prob <- rep(1/p, p)
+
+# iteratively grow RF, use Gini importance of features as weights
+rf = list()
+for (iter in 1:5){
+  training_set <-  BC_Balanced[cross_RF!=iter,]
+  test_set <-  BC_Balanced[cross_RF==iter,]
+  
+  rf[[iter]] <- randomForest(x=training_set[,-1], y=training_set[,1], 
+                             xtest=test_set[,-1], ytest=test_set[,1], 
+                             mtry.select.prob=sel.prob)
+  
+  # update selection probabilities for next iteration
+  sel.prob <- rf[[iter]]$importance
+}
+
+```
+
+
+
+```{r plot_1,eval= FALSE}
+## also checking eval=False
+print("this should not be printed 2")
+
+plot(0:1, 0:1, type='l', lty = 2, xlab = 'FPR', ylab = 'TPR', main='ROC Curve')
+for (iter in 1:5){
+  # performance on test set
+  cat(paste('iter = ', iter, ':: '))
+  roc.info <- roc(rf[[iter]]$test$votes[,2], test_set[,1])
+  lines(roc.info$fpr, roc.info$tpr, type='l', col=iter, lwd=2)
+  cat(paste('AUROC: ', round(100*auc(roc.info), 2), '%\n', sep=''))
+} 
+
+legend('bottomright', legend=paste('iter:', 1:iter), col=1:iter, lwd=2, bty='n')
+```
+
+
+
+
+
+## iRF package
+```{r iRF_1,eval=FALSE}
+## check Nº3
+print("this should not be printed 3")
+train <-  BC_Balanced[cross_RF!=1,]
+test <-  BC_Balanced[cross_RF==1,]
+ff_1 <- iRF(x=as.matrix(train[,-1]), y=train[,1], 
+          xtest=as.matrix(test[,-1]), ytest=test[,1], 
+          n.iter=5, 
+          interactions.return=5,
+          n.bootstrap=10
+        )
+
+ff_1_5 <- ff_1$rf.list[[5]]
+```
+
+
+
+Plot the AUC of the RF iterations in using iRF. 
+```{r iRF_AUC}
+names(BC_Balanced_num) <- make.names(names(BC_Balanced_num))
+cross_RF <- partition(p=5,f=BC_Balanced$Class)
+#list of lists
+iRF <- list()
+plots <- list()
+AUC_rate <-  data.frame(Partition =integer(0), Iteration= integer(0),AUC= numeric(0) )
+for (iter_1 in 1:5) {
+  train <-  BC_Balanced_num[cross_RF!=iter_1,]
+  test <-  BC_Balanced_num[cross_RF==iter_1,]
+  iRF[[iter_1]] <- iRF(x=as.matrix(train), y=BC_Balanced[cross_RF!=iter_1,"Class"], 
+            xtest=as.matrix(test), ytest=BC_Balanced[cross_RF==iter_1, "Class"], 
+            n.iter=5, 
+           n.bootstrap=10
+         )
+
+  
+ 
+  plot(0:1, 0:1, type='l', lty = 2, xlab = 'FPR', ylab = 'TPR', main='ROC Curve')
+  cat(paste('partition = ', iter_1, ':: ', '\n',sep = ''))
+  for (iter_2 in 1:5){
+  # performance on test set
+    roc.info <- roc(iRF[[iter_1]]$rf.list[[iter_2]]$test$votes[,2], test[,1])
+    AUC_iter <- auc(roc.info)
+    cat(paste('iter = ', iter_2, ':: '))
+    cat(paste('AUROC on the Test set: ', auc(roc.info), '\n', sep=''))
+    lines(roc.info$fpr, roc.info$tpr, type='l', col=iter_2, lwd=2)
+    AUC_rate <- rbind(AUC_rate,c(iter_1,iter_2,AUC_iter))
+  } 
+  colnames(AUC_rate) <- c("Partition", "Iteration","AUC")
+  legend('bottomright', legend=paste('iter:', 1:iter_2), col=1:iter_2, lwd=2, bty='n')
+  plots[[iter_1]] <- recordPlot()
+  plot.new()
+  
+}
+```
+
+
+
+```{r Store/Load}
+
+
+
+```
+
+
+## Finding Features Iteration
+- Decision trees
+- Iterative Random Forest
+
+iRF packages need a numeric matrix as an input instead of the factor dataframe. So it is converted using apply() function.<- r asnumeric
+
+
+```{r Variables_Iteration}
+## Use this RF objects iteration with all the data to find the iterations in the variables.
+## Try to not use test set
+names(BC_Balanced) <- make.names(names(BC_Balanced))
+iRF_iter <- iRF(x=as.matrix(BC_Balanced_num), y=BC_Balanced[,1], 
+            xtest=NULL, ytest=NULL, 
+            n.iter=5, 
+            n.bootstrap=10,
+            interactions.return=5
+)
+
+iRF_iter$interaction[[5]]
+# Store it
+iter_dataframe <- iRF_iter$interaction[[5]]
+
+```
+
+Ploting the 20 most stable interactions;
+
+```{r TopPlot}
+#toplot <- rev(iRF_iter$interaction[[5]]) To do the reverse but it is ok like that
+toplot <- iRF_iter$interaction[[5]]
+dotchart(toplot[1:min(20, length(toplot))], xlab='Stability Score', 
+         main='Prevalent Features/Interactions \n on Decision paths')
+
+```
+
+
+Comparing the optimized RF algorithm with other recognized algorithm in the bibliography; Decision tree J48(WEKA), Naybe Bayes and KNN.
+
+
+```{r out_models_comparison}
+cross_RF <- partition(p=8,f=BC_Balanced$Class)
+BC_Balanced_sub <- BC_Balanced[,c("Class", genes)]
+names(BC_Balanced) <- make.names(names(BC_Balanced))
+accu_models <-  data.frame(Partition =integer(0), Optimized_RF= numeric(0),knn= numeric(0), NB=numeric(0),J48=numeric(0), Ctree=numeric(0))
+for (p in 1:8) {
+  
+  training_set <-  BC_Balanced_sub[cross_RF!=p,]
+  test_set <-  BC_Balanced_sub[cross_RF==p,]
+  
+  
+  RF50_model <- randomForest(Class~.,data= training_set,importance=TRUE)
+  RF50_predict <- predict(RF50_model, newdata= test_set[,-1])
+  RF50_conf <- confusionMatrix(RF50_predict, test_set[,1])
+  
+  
+  knn_predict <- knn( train =  training_set[,-1], test =  test_set[,-1], cl= training_set[,1])
+  knn_conf <- confusionMatrix(knn_predict, test_set[,1])
+  #print(knn_conf$overall[1])
+ 
+  
+  NB_model <- naiveBayes(Class~.,data= training_set)
+  NB_predict <- predict(NB_model, newdata= test_set[,-1])
+  NB_conf <- confusionMatrix(NB_predict, test_set[,1])
+  #print(NB_conf$overall[1])
+  
+  
+ J48_model <- J48(Class~.,data = training_set)
+ J48_predict <- predict(J48_model,newdata= test_set[,-1])
+ J48_conf <- confusionMatrix(J48_predict, test_set[,1])
+ 
+  Ctree_model <- ctree(Class~.,data = training_set[,c("Class", rownames(imp_50)[1:4])])
+ Ctree_predict <- predict(Ctree_model,newdata= test_set[,rownames(imp_50)[1:4]])
+ Ctree_conf <- confusionMatrix(Ctree_predict, test_set[,1])
+ 
+ 
+ accu_models <- rbind(accu_models,c(p,RF50_conf$overall[1] ,knn_conf$overall[1],NB_conf$overall[1],J48_conf$overall[1],Ctree_conf$overall[1]))
+  
+}
+colnames(accu_models) <- c("Partition", "RF","knn","NB","J48","Ctree")
+
+```
+
+
+Coding the tree of the decision tree
+```{r Decision_Rules_tree}
+setwd("~/Documentos/TFM.LoadingData/Paper")
+## Coloriing the labels
+columncol<-hcl(c(270, 260, 250), 200, 30, 0.6)
+labelcol<-hcl(200, 200, 50, 0.2)
+indexcol<-hcl(150, 200, 50, 0.4)
+
+Ctree_model <- ctree(Class~.,data = BC_Balanced[,c("Class", rownames(imp_50)[1:7])])
+jpeg("CTree_full_BC.jpg", width=2000, height=750)
+plot.new()
+plot(Ctree_model, type = c("simple"), gp = gpar(fontsize = 15),
+      drop_terminal = TRUE, tnex=1,
+      inner_panel = node_inner(Ctree_model, abbreviate = TRUE,
+                               fill = c(labelcol, indexcol), pval = TRUE, id = TRUE),
+      terminal_panel=node_barplot(Ctree_model, col = "black", fill = columncol[c(1,2,4)], beside = TRUE,
+                                  ymax = 1, ylines = TRUE, widths = 1, gap = 0.1,
+                                  reverse = FALSE, id = TRUE))
+#title(main="My Beautiful Decision Tree", cex.main=3, line=1) 
+dev.off()
+```
+
+```{r, fig.width=25, fig.height=15}
+plot(Ctree_model, type = c("simple"), gp = gpar(fontsize = 15),
+      drop_terminal = TRUE, tnex=1, main="Figure 2. Decision Rules",
+      inner_panel = node_inner(Ctree_model, abbreviate = TRUE,
+                               fill = c(labelcol, indexcol), pval = TRUE, id = TRUE),
+      terminal_panel=node_barplot(Ctree_model, col = "black", fill = columncol[c(1,2,4)], beside = TRUE,
+                                  ymax = 1, ylines = TRUE, widths = 1, gap = 0.1,
+                                  reverse = FALSE, id = TRUE))
+
+```
+
+
+Getting the algorithm rules for classifications;
+
+First I save in the terminals the predictions and the rules how have we got them.
+```{r tree_rules}
+terminals <- data.frame(response = predict(Ctree_model, type = "response"))
+terminals$prob <- predict(Ctree_model, type = "prob")
+
+rules<-partykit:::.list.rules.party(Ctree_model)
+terminals$rule <- rules[as.character(predict(Ctree_model, type = "node"))]
+```
+
+Then I format and aggregate the values and the variablenames and I save it as Rules.xlsx.
+
+```{r tree_rules2}
+value<-cbind(terminals$rule, terminals[,which(grepl("prob", colnames(terminals)))])
+colnames(value)[1]<-"rules"
+DF<-data.table(value)  
+terminals<-as.data.frame(DF[,sapply(.SD, function(x) list(max=max(x))),by=list(rules)])
+terminalsname<-cbind(names(rules), rules)
+terminals<-merge(terminals, terminalsname, by=c("rules"))
+names<-colnames(terminals)[which(grepl(".max", colnames(terminals)))]
+names<-unlist(strsplit(names, "[.]"))[-which(unlist(strsplit(names, "[.]"))=="max")]
+colnames(terminals)[which(grepl(".max", colnames(terminals)))]<-names
+colnames(terminals)[which(colnames(terminals)=="V1")]<-"Terminal_Node"
+colnames(terminals)[which(colnames(terminals)=="rules")]<-"Rule"
+terminals<-terminals[,c(4,1,2,3)]
+terminals$Rule[which(grepl("\"NA\"", terminals$Rule))]<-gsub("\"NA\"", "", terminals$Rule[which(grepl("\"NA\"", terminals$Rule))])
+terminals$Terminal_Node<-as.numeric(as.character(terminals$Terminal_Node))
+terminals<-terminals[order(terminals$Terminal_Node),]
+write.xlsx(terminals, "Rules.xls", row.names=FALSE)
+```
+
+
+
+```{r table_nodes, results= 'asis'}
+kable(terminals,caption= "Table 2. Bacteremia-Perirecto A.baumanii Ctree decision rules. In this table the column termianl node reference the node of the decision tree shown in figure X. Followed by the rules of presence or ausence of genes and the proportion of strains being from Blood or preirectum")%>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+```
+
+
+
+
+
+
